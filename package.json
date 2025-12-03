@@ -6,6 +6,9 @@
     "packages/*",
     "dev-browser/*"
   ],
+  "overrides": {
+    "dev-browser": "workspace:packages/dev-browser"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "husky": "^9.1.7",

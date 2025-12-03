@@ -6,7 +6,7 @@
     "start-server": "bun x tsx scripts/start-server.ts"
   },
   "dependencies": {
-    "dev-browser": "workspace:*"
+    "dev-browser": "*"
   },
   "devDependencies": {
     "tsx": "^4.21.0"
