@@ -33,7 +33,9 @@ In practice, Claude will often explore a page step-by-step first, then generate 
 
 ## Installation
 
-### Step 1: Add the Marketplace
+### For Claude Code
+
+#### Step 1: Add the Marketplace
 
 In Claude Code, run:
 
@@ -41,17 +43,53 @@ In Claude Code, run:
 /plugin marketplace add sawyerhood/dev-browser
 ```
 
-### Step 2: Install the Plugin
+#### Step 2: Install the Plugin
 
 ```
 /plugin install dev-browser@sawyerhood/dev-browser
 ```
 
-### Step 3: Use It!
+#### Step 3: Use It!
 
 Prompt Claude to use it!
 
 > **Restart Claude Code** after installation to activate the plugin.
+
+### For Amp
+
+[Amp](https://ampcode.com) automatically detects skills from your `.claude/skills` directory with zero configuration required.
+
+**Note:** Since Amp can't run background processes, you'll need to manually start the dev-browser server in a separate terminal before using this skill.
+
+#### Step 1: Install the Skill
+
+```bash
+# Create skills directory if it doesn't exist
+mkdir -p ~/.claude/skills
+
+# Clone the repo and copy the skill
+git clone https://github.com/sawyerhood/dev-browser /tmp/dev-browser-skill
+cp -r /tmp/dev-browser-skill/skills/dev-browser ~/.claude/skills/dev-browser
+rm -rf /tmp/dev-browser-skill
+```
+
+#### Step 2: Start the Server
+
+Before using the skill, start the dev-browser server in a separate terminal:
+
+```bash
+cd ~/.claude/skills/dev-browser
+bun install  # First time only
+bun run start-server
+```
+
+Keep this terminal running while you use Amp.
+
+#### Step 3: Use It!
+
+Prompt Claude to use it! Amp will automatically load the skill when needed.
+
+> Learn more about [Amp's skill support](https://ampcode.com/manual#agent-skills).
 
 ## Usage
 
