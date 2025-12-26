@@ -1,6 +1,6 @@
 ---
 name: dev-browser
-description: Browser automation with persistent page state. Use when users ask to navigate websites, fill forms, take screenshots, extract web data, test web apps, or automate browser workflows. Trigger phrases include "go to [url]", "click on", "fill out the form", "take a screenshot", "scrape", "automate", "test the website", "log into", or any browser interaction request.
+description: Browser automation with persistent page state and MetaMask wallet support. Use when users ask to navigate websites, fill forms, take screenshots, extract web data, test web apps, automate browser workflows, or interact with Web3 dApps. Trigger phrases include "go to [url]", "click on", "fill out the form", "take a screenshot", "scrape", "automate", "test the website", "log into", "connect wallet", "sign transaction", "MetaMask", "dApp testing", or any browser/Web3 interaction request.
 ---
 
 # Dev Browser Skill
@@ -50,6 +50,29 @@ Wait for `Waiting for extension to connect...`
 2. Automation runs on the user's actual browser session
 
 If the extension hasn't connected yet, tell the user to launch and activate it. Download link: https://github.com/SawyerHood/dev-browser/releases
+
+### MetaMask Mode
+
+Launches browser with MetaMask extension for Web3 dApp testing. Use for SIWE authentication, transaction signing, and wallet interactions.
+
+**Required environment variables:**
+
+```bash
+export METAMASK_EXTENSION_PATH=/path/to/metamask-chrome-11.9.1  # Unpacked extension
+export WALLET_PASSWORD=your_wallet_password
+export SEED_PHRASE="your twelve word seed phrase here"  # Optional if using cached profile
+export SYNPRESS_CACHED_PROFILE=/path/to/synpress/cache  # Optional: pre-initialized wallet
+```
+
+**Start the server:**
+
+```bash
+cd skills/dev-browser && npm run start-metamask &
+```
+
+Wait for `Ready` message. The wallet will be automatically unlocked.
+
+**MetaMask popup handling:** See [references/metamask.md](references/metamask.md) for detailed patterns on handling connection requests, signature popups, and transaction confirmations.
 
 ## Writing Scripts
 
@@ -184,6 +207,34 @@ console.log(snapshot); // Find the ref you need
 const element = await client.selectSnapshotRef("hackernews", "e2");
 await element.click();
 ```
+
+## MetaMask Wallet Interactions
+
+When automating Web3 dApps, MetaMask popups appear for connections, signatures, and transactions. Handle them via browser context:
+
+```typescript
+// Find MetaMask popup in browser context
+const pages = page.context().pages();
+const metamaskPopup = pages.find((p) => p.url().includes("notification"));
+
+if (metamaskPopup) {
+  // Connection request: click Next → Connect
+  await metamaskPopup.click('[data-testid="page-container-footer-next"]');
+  await metamaskPopup.click('[data-testid="page-container-footer-next"]');
+
+  // Signature request: click Sign
+  await metamaskPopup.click('[data-testid="page-container-footer-next"]');
+}
+```
+
+**Popup URL patterns:**
+| Action | URL Contains |
+|--------|-------------|
+| Connect | `#connect` |
+| Sign message | `#signature-request` |
+| Transaction | `#confirm-transaction` |
+
+For complete patterns including network switching and error handling, see [references/metamask.md](references/metamask.md).
 
 ## Error Recovery
 
