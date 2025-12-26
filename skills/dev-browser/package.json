@@ -7,6 +7,7 @@
   },
   "scripts": {
     "start-server": "npx tsx scripts/start-server.ts",
+    "start-metamask": "npx tsx scripts/start-metamask.ts",
     "start-extension": "npx tsx scripts/start-relay.ts",
     "dev": "npx tsx --watch src/index.ts",
     "test": "vitest run",
@@ -17,7 +18,7 @@
     "@hono/node-ws": "^1.2.0",
     "express": "^4.21.0",
     "hono": "^4.11.1",
-    "playwright": "^1.49.0"
+    "playwright": "1.48.2"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

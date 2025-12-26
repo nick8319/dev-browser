@@ -1,7 +1,18 @@
 import express, { type Express, type Request, type Response } from "express";
 import { chromium, type BrowserContext, type Page } from "playwright";
-import { mkdirSync } from "fs";
+import { mkdirSync, existsSync, writeFileSync } from "fs";
 import { join } from "path";
+import {
+  getExtensionId,
+  createMetaMaskController,
+  importWallet,
+  type MetaMaskController,
+} from "./metamask";
+import type {
+  MetaMaskStatusResponse,
+  MetaMaskConnectResponse,
+  MetaMaskSignResponse,
+} from "./types";
 import type { Socket } from "net";
 import type {
   ServeOptions,
@@ -79,10 +90,24 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
 
   console.log("Launching browser with persistent context...");
 
+  // Build browser args
+  const browserArgs = [`--remote-debugging-port=${cdpPort}`];
+
+  // For extension loading, we need:
+  // 1. --disable-extensions-except to allow only our extension
+  // 2. --load-extension to explicitly load the extension
+  // Also: ignoreDefaultArgs: ['--disable-extensions'] to prevent Playwright from disabling all extensions
+  if (options.extensionPath) {
+    browserArgs.push(`--disable-extensions-except=${options.extensionPath}`);
+    browserArgs.push(`--load-extension=${options.extensionPath}`);
+  }
+
   // Launch persistent context - this persists cookies, localStorage, cache, etc.
   const context: BrowserContext = await chromium.launchPersistentContext(userDataDir, {
-    headless,
-    args: [`--remote-debugging-port=${cdpPort}`],
+    headless: options.extensionPath ? false : headless, // Extensions require headed mode
+    args: browserArgs,
+    // When loading extensions, we need to prevent Playwright from disabling all extensions
+    ignoreDefaultArgs: options.extensionPath ? ["--disable-extensions"] : undefined,
   });
   console.log("Browser launched with persistent profile...");
 
@@ -91,6 +116,77 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
   const cdpInfo = (await cdpResponse.json()) as { webSocketDebuggerUrl: string };
   const wsEndpoint = cdpInfo.webSocketDebuggerUrl;
   console.log(`CDP WebSocket endpoint: ${wsEndpoint}`);
+
+  // MetaMask extension state
+  let extensionId: string | null = null;
+  let metamaskController: MetaMaskController | null = null;
+  const walletInitializedFile = join(userDataDir, ".wallet-initialized");
+
+  // Initialize MetaMask if extension provided
+  if (options.extensionPath) {
+    console.log("Detecting MetaMask extension...");
+    extensionId = await getExtensionId(context, "MetaMask");
+
+    if (extensionId) {
+      console.log(`MetaMask extension ID: ${extensionId}`);
+
+      // Check if wallet needs to be initialized by checking MetaMask UI state
+      const setupPage = await context.newPage();
+      await setupPage.goto(`chrome-extension://${extensionId}/home.html`);
+      await setupPage.waitForTimeout(2000);
+
+      // Check if this is an unlock page (wallet already exists) or onboarding page (new wallet)
+      const hasUnlockPage = await setupPage.$(
+        '[data-testid="unlock-page"], .unlock-page, input[type="password"]'
+      );
+      const walletAlreadyExists = hasUnlockPage !== null;
+
+      if (walletAlreadyExists) {
+        console.log("Wallet already initialized, unlocking...");
+        // Mark as initialized
+        writeFileSync(walletInitializedFile, new Date().toISOString());
+        await setupPage.close();
+
+        // Create controller and unlock
+        if (options.walletPassword) {
+          metamaskController = await createMetaMaskController(
+            context,
+            extensionId,
+            options.walletPassword
+          );
+          await metamaskController.unlock(options.walletPassword);
+          console.log("MetaMask wallet unlocked");
+        }
+      } else if (options.seedPhrase && options.walletPassword) {
+        // New wallet - import from seed phrase
+        console.log("New wallet detected, importing from seed phrase...");
+        try {
+          await importWallet(setupPage, options.seedPhrase, options.walletPassword);
+          writeFileSync(walletInitializedFile, new Date().toISOString());
+          console.log("Wallet imported successfully");
+
+          // Add network if configured
+          if (options.networkConfig) {
+            metamaskController = await createMetaMaskController(
+              context,
+              extensionId,
+              options.walletPassword
+            );
+            await metamaskController.addNetwork(options.networkConfig);
+            console.log(`Added network: ${options.networkConfig.name}`);
+          }
+        } catch (err) {
+          console.error("Failed to import wallet:", err);
+        }
+        await setupPage.close();
+      } else {
+        console.log("No wallet credentials provided, skipping wallet setup");
+        await setupPage.close();
+      }
+    } else {
+      console.warn("MetaMask extension not found");
+    }
+  }
 
   // Registry entry type for page tracking
   interface PageEntry {
@@ -118,7 +214,11 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
 
   // GET / - server info
   app.get("/", (_req: Request, res: Response) => {
-    const response: ServerInfoResponse = { wsEndpoint };
+    const response: ServerInfoResponse = {
+      wsEndpoint,
+      metamaskExtensionId: extensionId ?? undefined,
+      metamaskInitialized: metamaskController !== null,
+    };
     res.json(response);
   });
 
@@ -182,6 +282,148 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
     }
 
     res.status(404).json({ error: "page not found" });
+  });
+
+  // GET /metamask/status - Get MetaMask status
+  app.get("/metamask/status", (_req: Request, res: Response) => {
+    const response: MetaMaskStatusResponse = {
+      extensionId,
+      isLocked: metamaskController === null,
+      walletInitialized: existsSync(walletInitializedFile),
+    };
+    res.json(response);
+  });
+
+  // POST /metamask/unlock - Unlock MetaMask
+  app.post("/metamask/unlock", async (req: Request, res: Response) => {
+    const { password } = req.body as { password: string };
+
+    if (!metamaskController && extensionId && password) {
+      try {
+        metamaskController = await createMetaMaskController(context, extensionId, password);
+        await metamaskController.unlock(password);
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ success: false, error: String(err) });
+      }
+    } else if (metamaskController) {
+      try {
+        await metamaskController.unlock(password);
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ success: false, error: String(err) });
+      }
+    } else {
+      res.status(400).json({ success: false, error: "MetaMask not available" });
+    }
+  });
+
+  // POST /metamask/connect - Connect to dApp
+  app.post("/metamask/connect", async (_req: Request, res: Response) => {
+    if (!metamaskController) {
+      res.status(400).json({ success: false, error: "MetaMask not initialized" });
+      return;
+    }
+
+    try {
+      await metamaskController.connectToDapp();
+      const response: MetaMaskConnectResponse = { success: true };
+      res.json(response);
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /metamask/sign - Confirm signature
+  app.post("/metamask/sign", async (_req: Request, res: Response) => {
+    if (!metamaskController) {
+      res.status(400).json({ success: false, error: "MetaMask not initialized" });
+      return;
+    }
+
+    try {
+      await metamaskController.confirmSignature();
+      const response: MetaMaskSignResponse = { success: true };
+      res.json(response);
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /metamask/reject-sign - Reject signature
+  app.post("/metamask/reject-sign", async (_req: Request, res: Response) => {
+    if (!metamaskController) {
+      res.status(400).json({ success: false, error: "MetaMask not initialized" });
+      return;
+    }
+
+    try {
+      await metamaskController.rejectSignature();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /metamask/confirm-tx - Confirm transaction
+  app.post("/metamask/confirm-tx", async (_req: Request, res: Response) => {
+    if (!metamaskController) {
+      res.status(400).json({ success: false, error: "MetaMask not initialized" });
+      return;
+    }
+
+    try {
+      await metamaskController.confirmTransaction();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /metamask/reject-tx - Reject transaction
+  app.post("/metamask/reject-tx", async (_req: Request, res: Response) => {
+    if (!metamaskController) {
+      res.status(400).json({ success: false, error: "MetaMask not initialized" });
+      return;
+    }
+
+    try {
+      await metamaskController.rejectTransaction();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /metamask/add-network - Add network
+  app.post("/metamask/add-network", async (req: Request, res: Response) => {
+    if (!metamaskController) {
+      res.status(400).json({ success: false, error: "MetaMask not initialized" });
+      return;
+    }
+
+    try {
+      await metamaskController.addNetwork(req.body);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /metamask/switch-network - Switch network
+  app.post("/metamask/switch-network", async (req: Request, res: Response) => {
+    if (!metamaskController) {
+      res.status(400).json({ success: false, error: "MetaMask not initialized" });
+      return;
+    }
+
+    try {
+      const { networkName } = req.body as { networkName: string };
+      await metamaskController.switchNetwork(networkName);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
   });
 
   // Start the server

@@ -213,6 +213,28 @@ export interface ServerInfo {
   extensionConnected?: boolean;
 }
 
+export interface MetaMaskClientMethods {
+  status: () => Promise<{
+    extensionId: string | null;
+    isLocked: boolean;
+    walletInitialized: boolean;
+  }>;
+  unlock: (password: string) => Promise<{ success: boolean; error?: string }>;
+  connect: () => Promise<{ success: boolean; error?: string }>;
+  sign: () => Promise<{ success: boolean; error?: string }>;
+  rejectSign: () => Promise<{ success: boolean; error?: string }>;
+  confirmTx: () => Promise<{ success: boolean; error?: string }>;
+  rejectTx: () => Promise<{ success: boolean; error?: string }>;
+  addNetwork: (network: {
+    name: string;
+    rpcUrl: string;
+    chainId: number;
+    symbol: string;
+    blockExplorerUrl?: string;
+  }) => Promise<{ success: boolean; error?: string }>;
+  switchNetwork: (networkName: string) => Promise<{ success: boolean; error?: string }>;
+}
+
 export interface DevBrowserClient {
   page: (name: string) => Promise<Page>;
   list: () => Promise<string[]>;
@@ -233,6 +255,10 @@ export interface DevBrowserClient {
    * Get server information including mode and extension connection status.
    */
   getServerInfo: () => Promise<ServerInfo>;
+  /**
+   * Get MetaMask client methods for wallet automation.
+   */
+  metamask: () => MetaMaskClientMethods;
 }
 
 export async function connect(serverUrl = "http://localhost:9222"): Promise<DevBrowserClient> {
@@ -459,6 +485,77 @@ export async function connect(serverUrl = "http://localhost:9222"): Promise<DevB
         wsEndpoint: info.wsEndpoint,
         mode: (info.mode as "launch" | "extension") ?? "launch",
         extensionConnected: info.extensionConnected,
+      };
+    },
+
+    metamask(): MetaMaskClientMethods {
+      return {
+        async status() {
+          const res = await fetch(`${serverUrl}/metamask/status`);
+          return res.json();
+        },
+
+        async unlock(password: string) {
+          const res = await fetch(`${serverUrl}/metamask/unlock`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password }),
+          });
+          return res.json();
+        },
+
+        async connect() {
+          const res = await fetch(`${serverUrl}/metamask/connect`, {
+            method: "POST",
+          });
+          return res.json();
+        },
+
+        async sign() {
+          const res = await fetch(`${serverUrl}/metamask/sign`, {
+            method: "POST",
+          });
+          return res.json();
+        },
+
+        async rejectSign() {
+          const res = await fetch(`${serverUrl}/metamask/reject-sign`, {
+            method: "POST",
+          });
+          return res.json();
+        },
+
+        async confirmTx() {
+          const res = await fetch(`${serverUrl}/metamask/confirm-tx`, {
+            method: "POST",
+          });
+          return res.json();
+        },
+
+        async rejectTx() {
+          const res = await fetch(`${serverUrl}/metamask/reject-tx`, {
+            method: "POST",
+          });
+          return res.json();
+        },
+
+        async addNetwork(network) {
+          const res = await fetch(`${serverUrl}/metamask/add-network`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(network),
+          });
+          return res.json();
+        },
+
+        async switchNetwork(networkName: string) {
+          const res = await fetch(`${serverUrl}/metamask/switch-network`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ networkName }),
+          });
+          return res.json();
+        },
       };
     },
   };

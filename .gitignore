@@ -42,3 +42,4 @@ profiles/
 # WXT generated files
 .wxt/
 .output/
+skills/dev-browser/profiles-metamask/
