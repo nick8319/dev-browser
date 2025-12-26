@@ -1,48 +1,71 @@
 ---
 name: dev-browser
-description: Browser automation with persistent page state and MetaMask wallet support. Use when users ask to navigate websites, fill forms, take screenshots, test web apps, automate browser workflows, or interact with Web3 dApps. Trigger phrases include "go to [url]", "click on", "fill out the form", "take a screenshot", "test the website", "connect wallet", "sign transaction", "approve MetaMask", "test dApp", "SIWE login", or any browser/wallet interaction request.
+description: Browser automation with persistent page state. Use when users ask to navigate websites, fill forms, take screenshots, extract web data, test web apps, or automate browser workflows. Trigger phrases include "go to [url]", "click on", "fill out the form", "take a screenshot", "scrape", "automate", "test the website", "log into", or any browser interaction request.
 ---
 
 # Dev Browser Skill
 
-Browser automation that maintains page state across script executions with MetaMask wallet integration for Web3 dApp testing.
+Browser automation that maintains page state across script executions. Write small, focused scripts to accomplish tasks incrementally. Once you've proven out part of a workflow and there is repeated work to be done, you can write a script to do the repeated work in a single execution.
 
-## Modes
+## Choosing Your Approach
 
-### Standard Mode (No Wallet)
+- **Local/source-available sites**: Read the source code first to write selectors directly
+- **Unknown page layouts**: Use `getAISnapshot()` to discover elements and `selectSnapshotRef()` to interact with them
+- **Visual feedback**: Take screenshots to see what the user sees
+
+## Setup
+
+Two modes available. Ask the user if unclear which to use.
+
+### Standalone Mode (Default)
+
+Launches a new Chromium browser for fresh automation sessions.
 
 ```bash
 ./skills/dev-browser/server.sh &
 ```
 
-### MetaMask Mode (Web3 dApps)
+Add `--headless` flag if user requests it. **Wait for the `Ready` message before running scripts.**
 
-Requires environment variables:
+### Extension Mode
+
+Connects to user's existing Chrome browser. Use this when:
+
+- The user is already logged into sites and wants you to do things behind an authed experience that isn't local dev.
+- The user asks you to use the extension
+
+**Important**: The core flow is still the same. You create named pages inside of their browser.
+
+**Start the relay server:**
 
 ```bash
-METAMASK_EXTENSION_PATH=/path/to/metamask \
-WALLET_PASSWORD=yourpassword \
-SYNPRESS_CACHED_PROFILE=/path/to/cached/profile \
-npm run start-metamask &
+cd skills/dev-browser && npm i && npm run start-extension &
 ```
 
-See [references/metamask.md](references/metamask.md) for complete MetaMask setup and wallet automation guide.
+Wait for `Waiting for extension to connect...`
 
-**Wait for `Ready` message before running scripts.**
+**Workflow:**
+
+1. Scripts call `client.page("name")` just like the normal mode to create new pages / connect to existing ones.
+2. Automation runs on the user's actual browser session
+
+If the extension hasn't connected yet, tell the user to launch and activate it. Download link: https://github.com/SawyerHood/dev-browser/releases
 
 ## Writing Scripts
 
-Run all scripts from `skills/dev-browser/` directory:
+> **Run all scripts from `skills/dev-browser/` directory.** The `@/` import alias requires this directory's config.
+
+Execute scripts inline using heredocs:
 
 ```bash
 cd skills/dev-browser && npx tsx <<'EOF'
 import { connect, waitForPageLoad } from "@/client.js";
 
 const client = await connect();
-const page = await client.page("my-dapp");
+const page = await client.page("example"); // descriptive name like "cnn-homepage"
 await page.setViewportSize({ width: 1280, height: 800 });
 
-await page.goto("http://localhost:3000");
+await page.goto("https://example.com");
 await waitForPageLoad(page);
 
 console.log({ title: await page.title(), url: page.url() });
@@ -50,76 +73,136 @@ await client.disconnect();
 EOF
 ```
 
-## Key Principles
+**Write to `tmp/` files only when** the script needs reuse, is complex, or user explicitly requests it.
 
-1. **Small scripts**: Each script does ONE thing
-2. **Evaluate state**: Log results to decide next steps
+### Key Principles
+
+1. **Small scripts**: Each script does ONE thing (navigate, click, fill, check)
+2. **Evaluate state**: Log/return state at the end to decide next steps
 3. **Descriptive page names**: Use `"checkout"`, `"login"`, not `"main"`
-4. **Disconnect to exit**: `await client.disconnect()` - pages persist
-5. **Plain JS in evaluate**: No TypeScript in `page.evaluate()` callbacks
+4. **Disconnect to exit**: `await client.disconnect()` - pages persist on server
+5. **Plain JS in evaluate**: `page.evaluate()` runs in browser - no TypeScript syntax
+
+## Workflow Loop
+
+Follow this pattern for complex tasks:
+
+1. **Write a script** to perform one action
+2. **Run it** and observe the output
+3. **Evaluate** - did it work? What's the current state?
+4. **Decide** - is the task complete or do we need another script?
+5. **Repeat** until task is done
+
+### No TypeScript in Browser Context
+
+Code passed to `page.evaluate()` runs in the browser, which doesn't understand TypeScript:
+
+```typescript
+// ✅ Correct: plain JavaScript
+const text = await page.evaluate(() => {
+  return document.body.innerText;
+});
+
+// ❌ Wrong: TypeScript syntax will fail at runtime
+const text = await page.evaluate(() => {
+  const el: HTMLElement = document.body; // Type annotation breaks in browser!
+  return el.innerText;
+});
+```
+
+## Scraping Data
+
+For scraping large datasets, intercept and replay network requests rather than scrolling the DOM. See [references/scraping.md](references/scraping.md) for the complete guide covering request capture, schema discovery, and paginated API replay.
 
 ## Client API
 
 ```typescript
 const client = await connect();
-const page = await client.page("name"); // Get or create page
-const pages = await client.list(); // List page names
-await client.close("name"); // Close page
+const page = await client.page("name"); // Get or create named page
+const pages = await client.list(); // List all page names
+await client.close("name"); // Close a page
 await client.disconnect(); // Disconnect (pages persist)
 
-// Element discovery
-const snapshot = await client.getAISnapshot("name");
-const element = await client.selectSnapshotRef("name", "e5");
+// ARIA Snapshot methods
+const snapshot = await client.getAISnapshot("name"); // Get accessibility tree
+const element = await client.selectSnapshotRef("name", "e5"); // Get element by ref
 ```
 
-## MetaMask Wallet Interactions
+The `page` object is a standard Playwright Page.
 
-When MetaMask popups appear, find and interact with them via the browser context:
+## Waiting
 
 ```typescript
-const context = page.context();
-const allPages = context.pages();
-const popup = allPages.find((p) => p.url().includes("notification.html"));
+import { waitForPageLoad } from "@/client.js";
 
-if (popup) {
-  // Click approve/sign/confirm buttons
-  await popup.click('button:has-text("Connect")');
-}
+await waitForPageLoad(page); // After navigation
+await page.waitForSelector(".results"); // For specific elements
+await page.waitForURL("**/success"); // For specific URL
 ```
 
-**Common MetaMask flows:**
+## Inspecting Page State
 
-| Flow                | Popup URL Contains     | Button Text        |
-| ------------------- | ---------------------- | ------------------ |
-| Connect wallet      | `#connect`             | "Next" → "Connect" |
-| Sign message (SIWE) | `#signature-request`   | "Sign"             |
-| Confirm transaction | `#confirm-transaction` | "Confirm"          |
-
-See [references/metamask.md](references/metamask.md) for complete examples.
-
-## Screenshots & Debugging
+### Screenshots
 
 ```typescript
 await page.screenshot({ path: "tmp/screenshot.png" });
 await page.screenshot({ path: "tmp/full.png", fullPage: true });
-
-// Debug state
-console.log({ url: page.url(), title: await page.title() });
 ```
 
-## ARIA Snapshot (Element Discovery)
+### ARIA Snapshot (Element Discovery)
 
-Use when page structure is unknown:
+Use `getAISnapshot()` to discover page elements. Returns YAML-formatted accessibility tree:
+
+```yaml
+- banner:
+  - link "Hacker News" [ref=e1]
+  - navigation:
+    - link "new" [ref=e2]
+- main:
+  - list:
+    - listitem:
+      - link "Article Title" [ref=e8]
+      - link "328 comments" [ref=e9]
+- contentinfo:
+  - textbox [ref=e10]
+    - /placeholder: "Search"
+```
+
+**Interpreting refs:**
+
+- `[ref=eN]` - Element reference for interaction (visible, clickable elements only)
+- `[checked]`, `[disabled]`, `[expanded]` - Element states
+- `[level=N]` - Heading level
+- `/url:`, `/placeholder:` - Element properties
+
+**Interacting with refs:**
 
 ```typescript
-const snapshot = await client.getAISnapshot("my-page");
-console.log(snapshot);
-// Output: - button "Submit" [ref=e5]
+const snapshot = await client.getAISnapshot("hackernews");
+console.log(snapshot); // Find the ref you need
 
-const element = await client.selectSnapshotRef("my-page", "e5");
+const element = await client.selectSnapshotRef("hackernews", "e2");
 await element.click();
 ```
 
-## Scraping Data
+## Error Recovery
 
-For large datasets, intercept network requests. See [references/scraping.md](references/scraping.md).
+Page state persists after failures. Debug with:
+
+```bash
+cd skills/dev-browser && npx tsx <<'EOF'
+import { connect } from "@/client.js";
+
+const client = await connect();
+const page = await client.page("hackernews");
+
+await page.screenshot({ path: "tmp/debug.png" });
+console.log({
+  url: page.url(),
+  title: await page.title(),
+  bodyText: await page.textContent("body").then((t) => t?.slice(0, 200)),
+});
+
+await client.disconnect();
+EOF
+```
