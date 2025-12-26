@@ -172,6 +172,12 @@ await page.screenshot({ path: "tmp/screenshot.png" });
 await page.screenshot({ path: "tmp/full.png", fullPage: true });
 ```
 
+**Important:** Keep viewport under 2000px to avoid API errors when sending multiple screenshots:
+
+```typescript
+await page.setViewportSize({ width: 1280, height: 800 }); // Safe dimensions
+```
+
 ### ARIA Snapshot (Element Discovery)
 
 Use `getAISnapshot()` to discover page elements. Returns YAML-formatted accessibility tree:
