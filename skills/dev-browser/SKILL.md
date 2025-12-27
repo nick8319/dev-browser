@@ -64,6 +64,19 @@ export SEED_PHRASE="your twelve word seed phrase here"  # Optional if using cach
 export SYNPRESS_CACHED_PROFILE=/path/to/synpress/cache  # Optional: pre-initialized wallet
 ```
 
+**Getting MetaMask extension:** If your project uses Synpress for E2E testing, the cached extension is typically at:
+
+```
+packages/e2e/.cache-synpress/metamask-chrome-*/
+```
+
+**Auth persistence:** The cached browser profile preserves login state across sessions. To test unauthenticated flows (login page, wallet connection):
+
+```typescript
+await page.evaluate(() => localStorage.clear());
+await page.reload();
+```
+
 **Start the server:**
 
 ```bash
@@ -214,6 +227,8 @@ const element = await client.selectSnapshotRef("hackernews", "e2");
 await element.click();
 ```
 
+> **Important:** Element refs (`e1`, `e2`, etc.) become stale after navigation. Always get a fresh snapshot after `page.goto()` or clicking links before interacting with elements.
+
 ## MetaMask Wallet Interactions
 
 When automating Web3 dApps, MetaMask popups appear for connections, signatures, and transactions. Handle them via browser context:
@@ -230,6 +245,25 @@ if (metamaskPopup) {
 
   // Signature request: click Sign
   await metamaskPopup.click('[data-testid="page-container-footer-next"]');
+}
+```
+
+**Button selectors (in order of reliability):**
+
+```typescript
+// Try multiple selectors for robustness - MetaMask UI varies by version
+const selectors = [
+  "button.btn-primary", // Most reliable for confirm/sign
+  '[data-testid="confirm-footer-button"]', // Newer MetaMask versions
+  '[data-testid="page-container-footer-next"]', // Older MetaMask versions
+];
+
+for (const selector of selectors) {
+  const btn = await metamaskPopup.$(selector);
+  if (btn) {
+    await btn.click();
+    break;
+  }
 }
 ```
 
@@ -251,7 +285,7 @@ cd skills/dev-browser && npx tsx <<'EOF'
 import { connect } from "@/client.js";
 
 const client = await connect();
-const page = await client.page("hackernews");
+const page = await client.page("my-page");
 
 await page.screenshot({ path: "tmp/debug.png" });
 console.log({
@@ -263,3 +297,39 @@ console.log({
 await client.disconnect();
 EOF
 ```
+
+### MetaMask Popup Debugging
+
+When MetaMask interactions fail or behave unexpectedly, capture both the dApp page and any MetaMask popups:
+
+```bash
+cd skills/dev-browser && npx tsx <<'EOF'
+import { connect } from "@/client.js";
+
+const client = await connect();
+const page = await client.page("my-page");
+
+// Screenshot main page
+await page.screenshot({ path: "tmp/debug-page.png" });
+
+// Find and screenshot all MetaMask popups
+const allPages = page.context().pages();
+for (let i = 0; i < allPages.length; i++) {
+  const p = allPages[i];
+  const url = p.url();
+  if (url.includes('chrome-extension://') || url.includes('notification')) {
+    await p.screenshot({ path: `tmp/debug-metamask-${i}.png` });
+    console.log(`MetaMask popup ${i}: ${url}`);
+  }
+}
+
+console.log(`Total pages in context: ${allPages.length}`);
+await client.disconnect();
+EOF
+```
+
+**Common MetaMask issues:**
+
+- Popup not appearing → Check if MetaMask is unlocked, try `page.waitForTimeout(2000)`
+- Wrong network → MetaMask may prompt for network switch before transaction
+- Popup closed unexpectedly → User or timeout closed it, re-trigger the action
