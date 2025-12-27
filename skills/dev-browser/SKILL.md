@@ -5,122 +5,48 @@ description: Browser automation with persistent page state and MetaMask wallet s
 
 # Dev Browser Skill
 
-Browser automation that maintains page state across script executions. Write small, focused scripts to accomplish tasks incrementally. Once you've proven out part of a workflow and there is repeated work to be done, you can write a script to do the repeated work in a single execution.
-
-## Choosing Your Approach
-
-- **Local/source-available sites**: Read the source code first to write selectors directly
-- **Unknown page layouts**: Use `getAISnapshot()` to discover elements and `selectSnapshotRef()` to interact with them
-- **Visual feedback**: Take screenshots to see what the user sees
+Browser automation with persistent page state. Write small scripts, run them, observe results, iterate.
 
 ## Setup
 
-Two modes available. Ask the user if unclear which to use.
+**Wait for `Ready` message before running scripts.**
 
 ### Standalone Mode (Default)
-
-Launches a new Chromium browser for fresh automation sessions.
 
 ```bash
 ./skills/dev-browser/server.sh &
 ```
 
-Add `--headless` flag if user requests it. **Wait for the `Ready` message before running scripts.**
-
 ### Extension Mode
 
-Connects to user's existing Chrome browser. Use this when:
-
-- The user is already logged into sites and wants you to do things behind an authed experience that isn't local dev.
-- The user asks you to use the extension
-
-**Important**: The core flow is still the same. You create named pages inside of their browser.
-
-**Start the relay server:**
+Connects to user's existing Chrome with their session. Use when user is logged into sites.
 
 ```bash
 cd skills/dev-browser && npm i && npm run start-extension &
 ```
 
-Wait for `Waiting for extension to connect...`
-
-**Workflow:**
-
-1. Scripts call `client.page("name")` just like the normal mode to create new pages / connect to existing ones.
-2. Automation runs on the user's actual browser session
-
-If the extension hasn't connected yet, tell the user to launch and activate it. Download link: https://github.com/SawyerHood/dev-browser/releases
+If extension not connected, user must install from: https://github.com/SawyerHood/dev-browser/releases
 
 ### MetaMask Mode
 
-Launches browser with MetaMask extension for Web3 dApp testing. Use for SIWE authentication, transaction signing, and wallet interactions.
-
-#### Quick Start (Recommended)
-
-If your project has MetaMask config in `.env`, just run:
+For Web3 dApp testing (SIWE auth, transactions, wallet interactions):
 
 ```bash
-cd skills/dev-browser && npm run start-metamask -- --project-dir /path/to/your/project &
+cd skills/dev-browser && npm run start-metamask -- --project-dir /path/to/project &
 ```
 
-The script auto-loads these variables from your project's `.env`:
-
-- `METAMASK_EXTENSION_PATH` - Path to unpacked MetaMask extension
-- `WALLET_PASSWORD` - Password for MetaMask wallet
-- `SEED_PHRASE` - (Optional) Seed phrase for wallet import
-- `SYNPRESS_CACHED_PROFILE` - (Optional) Path to Synpress cached wallet profile
-
-**Example `.env` configuration:**
-
-```bash
-# Add to your project's .env file
-METAMASK_EXTENSION_PATH=/path/to/packages/e2e/.cache-synpress/metamask-chrome-11.9.1
-WALLET_PASSWORD=YourWalletPassword123!
-SEED_PHRASE="word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12"
-SYNPRESS_CACHED_PROFILE=/path/to/packages/e2e/.cache-synpress/cached-profile-hash
-```
-
-#### Alternative: Manual Export
-
-If you prefer to export variables manually:
-
-```bash
-export METAMASK_EXTENSION_PATH=/path/to/metamask-chrome-11.9.1
-export WALLET_PASSWORD=your_wallet_password
-export SEED_PHRASE="your twelve word seed phrase here"  # Optional
-export SYNPRESS_CACHED_PROFILE=/path/to/synpress/cache  # Optional
-cd skills/dev-browser && npm run start-metamask &
-```
-
-**Getting MetaMask extension:** If your project uses Synpress for E2E testing, the cached extension is typically at:
-
-```
-packages/e2e/.cache-synpress/metamask-chrome-*/
-```
-
-**Auth persistence:** The cached browser profile preserves login state across sessions. To test unauthenticated flows (login page, wallet connection):
-
-```typescript
-await page.evaluate(() => localStorage.clear());
-await page.reload();
-```
-
-Wait for `Ready` message. The wallet will be automatically unlocked.
-
-**MetaMask popup handling:** See [references/metamask.md](references/metamask.md) for detailed patterns on handling connection requests, signature popups, and transaction confirmations.
+Requires `METAMASK_EXTENSION_PATH` and `WALLET_PASSWORD` in project's `.env`. Script auto-loads them.
 
 ## Writing Scripts
 
-> **Run all scripts from `skills/dev-browser/` directory.** The `@/` import alias requires this directory's config.
-
-Execute scripts inline using heredocs:
+Run from `skills/dev-browser/` directory (required for `@/` imports):
 
 ```bash
 cd skills/dev-browser && npx tsx <<'EOF'
 import { connect, waitForPageLoad } from "@/client.js";
 
 const client = await connect();
-const page = await client.page("example"); // descriptive name like "cnn-homepage"
+const page = await client.page("my-page");
 await page.setViewportSize({ width: 1280, height: 800 });
 
 await page.goto("https://example.com");
@@ -131,227 +57,83 @@ await client.disconnect();
 EOF
 ```
 
-**Write to `tmp/` files only when** the script needs reuse, is complex, or user explicitly requests it.
-
-### Key Principles
-
-1. **Small scripts**: Each script does ONE thing (navigate, click, fill, check)
-2. **Evaluate state**: Log/return state at the end to decide next steps
-3. **Descriptive page names**: Use `"checkout"`, `"login"`, not `"main"`
-4. **Disconnect to exit**: `await client.disconnect()` - pages persist on server
-5. **Plain JS in evaluate**: `page.evaluate()` runs in browser - no TypeScript syntax
-
-## Workflow Loop
-
-Follow this pattern for complex tasks:
-
-1. **Write a script** to perform one action
-2. **Run it** and observe the output
-3. **Evaluate** - did it work? What's the current state?
-4. **Decide** - is the task complete or do we need another script?
-5. **Repeat** until task is done
-
-### No TypeScript in Browser Context
-
-Code passed to `page.evaluate()` runs in the browser, which doesn't understand TypeScript:
-
-```typescript
-// ✅ Correct: plain JavaScript
-const text = await page.evaluate(() => {
-  return document.body.innerText;
-});
-
-// ❌ Wrong: TypeScript syntax will fail at runtime
-const text = await page.evaluate(() => {
-  const el: HTMLElement = document.body; // Type annotation breaks in browser!
-  return el.innerText;
-});
-```
-
-## Scraping Data
-
-For scraping large datasets, intercept and replay network requests rather than scrolling the DOM. See [references/scraping.md](references/scraping.md) for the complete guide covering request capture, schema discovery, and paginated API replay.
+**Important:** No TypeScript syntax in `page.evaluate()` - it runs in browser context.
 
 ## Client API
 
 ```typescript
 const client = await connect();
-const page = await client.page("name"); // Get or create named page
-const pages = await client.list(); // List all page names
-await client.close("name"); // Close a page
+const page = await client.page("name"); // Get or create page
+await client.list(); // List page names
+await client.close("name"); // Close page
 await client.disconnect(); // Disconnect (pages persist)
 
-// ARIA Snapshot methods
-const snapshot = await client.getAISnapshot("name"); // Get accessibility tree
-const element = await client.selectSnapshotRef("name", "e5"); // Get element by ref
+// Element discovery
+const snapshot = await client.getAISnapshot("name");
+const element = await client.selectSnapshotRef("name", "e5");
 ```
 
 The `page` object is a standard Playwright Page.
 
-## Waiting
+## ARIA Snapshots
 
-```typescript
-import { waitForPageLoad } from "@/client.js";
-
-await waitForPageLoad(page); // After navigation
-await page.waitForSelector(".results"); // For specific elements
-await page.waitForURL("**/success"); // For specific URL
-```
-
-## Inspecting Page State
-
-### Screenshots
-
-```typescript
-await page.screenshot({ path: "tmp/screenshot.png" });
-await page.screenshot({ path: "tmp/full.png", fullPage: true });
-```
-
-**Important:** Keep viewport under 2000px to avoid API errors when sending multiple screenshots:
-
-```typescript
-await page.setViewportSize({ width: 1280, height: 800 }); // Safe dimensions
-```
-
-### ARIA Snapshot (Element Discovery)
-
-Use `getAISnapshot()` to discover page elements. Returns YAML-formatted accessibility tree:
+Discover elements with `getAISnapshot()`. Returns accessibility tree with refs:
 
 ```yaml
-- banner:
-  - link "Hacker News" [ref=e1]
-  - navigation:
-    - link "new" [ref=e2]
-- main:
-  - list:
-    - listitem:
-      - link "Article Title" [ref=e8]
-      - link "328 comments" [ref=e9]
-- contentinfo:
-  - textbox [ref=e10]
-    - /placeholder: "Search"
+- link "Submit" [ref=e1]
+- textbox [ref=e2] /placeholder: "Email"
 ```
 
-**Interpreting refs:**
+Interact: `await client.selectSnapshotRef("page", "e1").then(el => el.click())`
 
-- `[ref=eN]` - Element reference for interaction (visible, clickable elements only)
-- `[checked]`, `[disabled]`, `[expanded]` - Element states
-- `[level=N]` - Heading level
-- `/url:`, `/placeholder:` - Element properties
+**Critical:** Refs become stale after navigation. Always get fresh snapshot after `page.goto()` or link clicks.
 
-**Interacting with refs:**
+## MetaMask Popup Handling
 
 ```typescript
-const snapshot = await client.getAISnapshot("hackernews");
-console.log(snapshot); // Find the ref you need
-
-const element = await client.selectSnapshotRef("hackernews", "e2");
-await element.click();
-```
-
-> **Important:** Element refs (`e1`, `e2`, etc.) become stale after navigation. Always get a fresh snapshot after `page.goto()` or clicking links before interacting with elements.
-
-## MetaMask Wallet Interactions
-
-When automating Web3 dApps, MetaMask popups appear for connections, signatures, and transactions. Handle them via browser context:
-
-```typescript
-// Find MetaMask popup in browser context
 const pages = page.context().pages();
-const metamaskPopup = pages.find((p) => p.url().includes("notification"));
+const popup = pages.find((p) => p.url().includes("notification"));
 
-if (metamaskPopup) {
-  // Connection request: click Next → Connect
-  await metamaskPopup.click('[data-testid="page-container-footer-next"]');
-  await metamaskPopup.click('[data-testid="page-container-footer-next"]');
-
-  // Signature request: click Sign
-  await metamaskPopup.click('[data-testid="page-container-footer-next"]');
-}
-```
-
-**Button selectors (in order of reliability):**
-
-```typescript
-// Try multiple selectors for robustness - MetaMask UI varies by version
+// Try selectors in order (MetaMask UI varies by version)
 const selectors = [
-  "button.btn-primary", // Most reliable for confirm/sign
-  '[data-testid="confirm-footer-button"]', // Newer MetaMask versions
-  '[data-testid="page-container-footer-next"]', // Older MetaMask versions
+  "button.btn-primary",
+  '[data-testid="confirm-footer-button"]',
+  '[data-testid="page-container-footer-next"]',
 ];
-
-for (const selector of selectors) {
-  const btn = await metamaskPopup.$(selector);
-  if (btn) {
-    await btn.click();
+for (const sel of selectors) {
+  if (await popup.$(sel)) {
+    await popup.click(sel);
     break;
   }
 }
 ```
 
-**Popup URL patterns:**
-| Action | URL Contains |
-|--------|-------------|
-| Connect | `#connect` |
-| Sign message | `#signature-request` |
+| Action      | URL Contains           |
+| ----------- | ---------------------- |
+| Connect     | `#connect`             |
+| Sign        | `#signature-request`   |
 | Transaction | `#confirm-transaction` |
 
-For complete patterns including network switching and error handling, see [references/metamask.md](references/metamask.md).
+See [references/metamask.md](references/metamask.md) for complete patterns.
 
-## Error Recovery
+## Debugging
 
-Page state persists after failures. Debug with:
-
-```bash
-cd skills/dev-browser && npx tsx <<'EOF'
-import { connect } from "@/client.js";
-
-const client = await connect();
-const page = await client.page("my-page");
-
+```typescript
 await page.screenshot({ path: "tmp/debug.png" });
-console.log({
-  url: page.url(),
-  title: await page.title(),
-  bodyText: await page.textContent("body").then((t) => t?.slice(0, 200)),
-});
-
-await client.disconnect();
-EOF
-```
-
-### MetaMask Popup Debugging
-
-When MetaMask interactions fail or behave unexpectedly, capture both the dApp page and any MetaMask popups:
-
-```bash
-cd skills/dev-browser && npx tsx <<'EOF'
-import { connect } from "@/client.js";
-
-const client = await connect();
-const page = await client.page("my-page");
-
-// Screenshot main page
-await page.screenshot({ path: "tmp/debug-page.png" });
-
-// Find and screenshot all MetaMask popups
-const allPages = page.context().pages();
-for (let i = 0; i < allPages.length; i++) {
-  const p = allPages[i];
-  const url = p.url();
-  if (url.includes('chrome-extension://') || url.includes('notification')) {
-    await p.screenshot({ path: `tmp/debug-metamask-${i}.png` });
-    console.log(`MetaMask popup ${i}: ${url}`);
-  }
+// For MetaMask: screenshot all extension pages
+for (const p of page.context().pages()) {
+  if (p.url().includes("chrome-extension://"))
+    await p.screenshot({ path: `tmp/metamask-${Date.now()}.png` });
 }
-
-console.log(`Total pages in context: ${allPages.length}`);
-await client.disconnect();
-EOF
 ```
 
-**Common MetaMask issues:**
+**Common issues:**
 
-- Popup not appearing → Check if MetaMask is unlocked, try `page.waitForTimeout(2000)`
-- Wrong network → MetaMask may prompt for network switch before transaction
-- Popup closed unexpectedly → User or timeout closed it, re-trigger the action
+- Popup not appearing → MetaMask locked or needs `waitForTimeout(2000)`
+- Wrong network → MetaMask prompts network switch first
+- Stale refs → Get fresh snapshot after navigation
+
+## References
+
+- **MetaMask patterns:** [references/metamask.md](references/metamask.md)
+- **Scraping guide:** [references/scraping.md](references/scraping.md)
