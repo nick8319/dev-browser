@@ -16,6 +16,7 @@
   "dependencies": {
     "@hono/node-server": "^1.19.7",
     "@hono/node-ws": "^1.2.0",
+    "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "hono": "^4.11.1",
     "playwright": "1.48.2"

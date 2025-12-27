@@ -1,13 +1,19 @@
 /**
  * Start dev-browser server with MetaMask extension support
  *
- * Environment variables:
+ * Usage:
+ *   npm run start-metamask -- --project-dir /path/to/project
+ *
+ * The script will auto-load these environment variables from the project's .env:
  *   METAMASK_EXTENSION_PATH - Path to unpacked MetaMask extension
  *   WALLET_PASSWORD - Password for the MetaMask wallet
  *   SEED_PHRASE - (Optional) Seed phrase for wallet import on first run
  *   SYNPRESS_CACHED_PROFILE - (Optional) Path to Synpress cached wallet profile
+ *
+ * Alternatively, you can export these variables manually before running.
  */
 import { serve } from "@/index.js";
+import { config as dotenvConfig } from "dotenv";
 import { execSync } from "child_process";
 import { mkdirSync, existsSync, readdirSync, cpSync } from "fs";
 import { join, dirname, resolve } from "path";
@@ -17,9 +23,102 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const tmpDir = join(__dirname, "..", "tmp");
 const profileDir = join(__dirname, "..", "profiles-metamask");
 
+// Parse command line arguments
+function parseArgs(): { projectDir?: string } {
+  const args = process.argv.slice(2);
+  const result: { projectDir?: string } = {};
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--project-dir" && args[i + 1]) {
+      result.projectDir = resolve(args[i + 1]);
+      i++;
+    }
+  }
+
+  return result;
+}
+
+// Load environment variables from project's .env if --project-dir is specified
+function loadEnvFromProject(projectDir: string): boolean {
+  const envFiles = [".env.local", ".env"];
+
+  for (const envFile of envFiles) {
+    const envPath = join(projectDir, envFile);
+    if (existsSync(envPath)) {
+      console.log(`Loading environment from: ${envPath}`);
+      dotenvConfig({ path: envPath });
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Validate required environment variables and return missing ones
+function validateEnvVars(): { valid: boolean; missing: string[] } {
+  const required = ["METAMASK_EXTENSION_PATH", "WALLET_PASSWORD"];
+  const missing = required.filter((key) => !process.env[key]);
+  return { valid: missing.length === 0, missing };
+}
+
+// Print usage instructions
+function printUsage(missing: string[] = []) {
+  console.log("\n" + "=".repeat(60));
+  console.log("Dev Browser with MetaMask - Setup Required");
+  console.log("=".repeat(60));
+
+  if (missing.length > 0) {
+    console.log("\n❌ Missing required environment variables:");
+    missing.forEach((key) => console.log(`   - ${key}`));
+  }
+
+  console.log("\n📋 OPTION 1: Use --project-dir (Recommended)");
+  console.log("   Add these to your project's .env file:\n");
+  console.log("   METAMASK_EXTENSION_PATH=/path/to/metamask-chrome-11.9.1");
+  console.log("   WALLET_PASSWORD=your_wallet_password");
+  console.log('   SEED_PHRASE="your twelve word seed phrase"  # Optional');
+  console.log("   SYNPRESS_CACHED_PROFILE=/path/to/cache       # Optional");
+  console.log("\n   Then run:");
+  console.log("   npm run start-metamask -- --project-dir /path/to/your/project");
+
+  console.log("\n📋 OPTION 2: Export variables manually");
+  console.log("   export METAMASK_EXTENSION_PATH=/path/to/metamask-chrome-11.9.1");
+  console.log("   export WALLET_PASSWORD=your_wallet_password");
+  console.log("   npm run start-metamask");
+
+  console.log("\n💡 TIP: If using Synpress for E2E testing, the MetaMask extension is at:");
+  console.log("   packages/e2e/.cache-synpress/metamask-chrome-*/");
+
+  console.log("\n" + "=".repeat(60) + "\n");
+}
+
+// Main execution
+const args = parseArgs();
+
+// Load .env from project directory if specified
+if (args.projectDir) {
+  if (!existsSync(args.projectDir)) {
+    console.error(`Error: Project directory not found: ${args.projectDir}`);
+    process.exit(1);
+  }
+
+  const loaded = loadEnvFromProject(args.projectDir);
+  if (!loaded) {
+    console.log(`Note: No .env file found in ${args.projectDir}`);
+    console.log("Falling back to existing environment variables...");
+  }
+}
+
+// Validate required environment variables
+const { valid, missing } = validateEnvVars();
+if (!valid) {
+  printUsage(missing);
+  process.exit(1);
+}
+
 // MetaMask configuration from environment
-const METAMASK_EXTENSION_PATH = process.env.METAMASK_EXTENSION_PATH;
-const WALLET_PASSWORD = process.env.WALLET_PASSWORD;
+const METAMASK_EXTENSION_PATH = process.env.METAMASK_EXTENSION_PATH!;
+const WALLET_PASSWORD = process.env.WALLET_PASSWORD!;
 const SEED_PHRASE = process.env.SEED_PHRASE;
 const SYNPRESS_CACHED_PROFILE = process.env.SYNPRESS_CACHED_PROFILE;
 
@@ -33,26 +132,6 @@ const NETWORK_CONFIG = process.env.NETWORK_NAME
       blockExplorerUrl: process.env.NETWORK_EXPLORER_URL,
     }
   : undefined;
-
-if (!METAMASK_EXTENSION_PATH) {
-  console.error("Error: METAMASK_EXTENSION_PATH environment variable is required");
-  console.log("\nUsage:");
-  console.log(
-    "  METAMASK_EXTENSION_PATH=/path/to/metamask WALLET_PASSWORD=yourpassword npm run start-metamask"
-  );
-  console.log("\nOptional environment variables:");
-  console.log("  SEED_PHRASE - Seed phrase for wallet import (if not using cached profile)");
-  console.log("  SYNPRESS_CACHED_PROFILE - Path to Synpress cached wallet profile");
-  console.log(
-    "  NETWORK_NAME, NETWORK_RPC_URL, NETWORK_CHAIN_ID, NETWORK_SYMBOL, NETWORK_EXPLORER_URL - Custom network config"
-  );
-  process.exit(1);
-}
-
-if (!WALLET_PASSWORD) {
-  console.error("Error: WALLET_PASSWORD environment variable is required");
-  process.exit(1);
-}
 
 // Create directories
 console.log("Creating tmp directory...");
@@ -116,7 +195,10 @@ try {
 
 // Validate MetaMask extension exists
 if (!existsSync(METAMASK_EXTENSION_PATH)) {
-  console.error(`MetaMask extension not found at: ${METAMASK_EXTENSION_PATH}`);
+  console.error(`\n❌ MetaMask extension not found at: ${METAMASK_EXTENSION_PATH}`);
+  console.log("\n💡 Check that the path is correct. Common locations:");
+  console.log("   - packages/e2e/.cache-synpress/metamask-chrome-11.9.1/");
+  console.log("   - node_modules/@synthetixio/synpress-cache/metamask-chrome-*/");
   process.exit(1);
 }
 

@@ -55,13 +55,41 @@ If the extension hasn't connected yet, tell the user to launch and activate it. 
 
 Launches browser with MetaMask extension for Web3 dApp testing. Use for SIWE authentication, transaction signing, and wallet interactions.
 
-**Required environment variables:**
+#### Quick Start (Recommended)
+
+If your project has MetaMask config in `.env`, just run:
 
 ```bash
-export METAMASK_EXTENSION_PATH=/path/to/metamask-chrome-11.9.1  # Unpacked extension
+cd skills/dev-browser && npm run start-metamask -- --project-dir /path/to/your/project &
+```
+
+The script auto-loads these variables from your project's `.env`:
+
+- `METAMASK_EXTENSION_PATH` - Path to unpacked MetaMask extension
+- `WALLET_PASSWORD` - Password for MetaMask wallet
+- `SEED_PHRASE` - (Optional) Seed phrase for wallet import
+- `SYNPRESS_CACHED_PROFILE` - (Optional) Path to Synpress cached wallet profile
+
+**Example `.env` configuration:**
+
+```bash
+# Add to your project's .env file
+METAMASK_EXTENSION_PATH=/path/to/packages/e2e/.cache-synpress/metamask-chrome-11.9.1
+WALLET_PASSWORD=YourWalletPassword123!
+SEED_PHRASE="word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12"
+SYNPRESS_CACHED_PROFILE=/path/to/packages/e2e/.cache-synpress/cached-profile-hash
+```
+
+#### Alternative: Manual Export
+
+If you prefer to export variables manually:
+
+```bash
+export METAMASK_EXTENSION_PATH=/path/to/metamask-chrome-11.9.1
 export WALLET_PASSWORD=your_wallet_password
-export SEED_PHRASE="your twelve word seed phrase here"  # Optional if using cached profile
-export SYNPRESS_CACHED_PROFILE=/path/to/synpress/cache  # Optional: pre-initialized wallet
+export SEED_PHRASE="your twelve word seed phrase here"  # Optional
+export SYNPRESS_CACHED_PROFILE=/path/to/synpress/cache  # Optional
+cd skills/dev-browser && npm run start-metamask &
 ```
 
 **Getting MetaMask extension:** If your project uses Synpress for E2E testing, the cached extension is typically at:
@@ -75,12 +103,6 @@ packages/e2e/.cache-synpress/metamask-chrome-*/
 ```typescript
 await page.evaluate(() => localStorage.clear());
 await page.reload();
-```
-
-**Start the server:**
-
-```bash
-cd skills/dev-browser && npm run start-metamask &
 ```
 
 Wait for `Ready` message. The wallet will be automatically unlocked.
