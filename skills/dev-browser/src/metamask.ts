@@ -1,4 +1,78 @@
-import type { BrowserContext, Page } from "playwright";
+import type { BrowserContext, Locator, Page } from "playwright";
+
+// ============================================================================
+// Smart Waiting Utilities
+// ============================================================================
+
+const DEFAULT_TIMEOUT = 10000;
+const SHORT_TIMEOUT = 5000;
+
+/**
+ * Wait for a locator to be visible and enabled (ready for interaction)
+ */
+async function waitForInteractable(locator: Locator, timeout = DEFAULT_TIMEOUT): Promise<void> {
+  await locator.waitFor({ state: "visible", timeout });
+  // Poll until enabled
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeout) {
+    if (await locator.isEnabled()) return;
+    await locator.page().waitForTimeout(50);
+  }
+}
+
+/**
+ * Wait for any of the given selectors to appear
+ * Returns the index of the first selector that matched
+ */
+async function waitForAnySelector(
+  page: Page,
+  selectors: string[],
+  timeout = DEFAULT_TIMEOUT
+): Promise<number> {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeout) {
+    for (let i = 0; i < selectors.length; i++) {
+      const count = await page.locator(selectors[i]!).count();
+      if (count > 0) return i;
+    }
+    await page.waitForTimeout(100);
+  }
+  throw new Error(`None of selectors found within ${timeout}ms: ${selectors.join(", ")}`);
+}
+
+/**
+ * Wait for an element to disappear from DOM
+ */
+async function waitForDetached(
+  page: Page,
+  selector: string,
+  timeout = DEFAULT_TIMEOUT
+): Promise<void> {
+  await page.waitForSelector(selector, { state: "detached", timeout }).catch(() => {
+    // Element may never have existed
+  });
+}
+
+/**
+ * Poll until a condition becomes true
+ */
+async function pollUntil(
+  page: Page,
+  condition: () => Promise<boolean>,
+  timeout = DEFAULT_TIMEOUT,
+  interval = 100
+): Promise<void> {
+  const startTime = Date.now();
+  while (Date.now() - startTime < timeout) {
+    if (await condition()) return;
+    await page.waitForTimeout(interval);
+  }
+  throw new Error(`Condition not met within ${timeout}ms`);
+}
+
+// ============================================================================
+// Types
+// ============================================================================
 
 /**
  * Network configuration for adding custom networks to MetaMask
@@ -57,13 +131,20 @@ export async function getExtensionId(
   const page = await context.newPage();
   try {
     await page.goto("chrome://extensions");
-    // Wait a moment for the extensions page to fully load
-    await page.waitForTimeout(1000);
 
-    const extensions = (await page.evaluate("chrome.management.getAll()")) as Array<{
-      id: string;
-      name: string;
-    }>;
+    // Poll until chrome.management.getAll() returns extensions
+    let extensions: Array<{ id: string; name: string }> = [];
+    await pollUntil(
+      page,
+      async () => {
+        extensions = (await page.evaluate("chrome.management.getAll()")) as typeof extensions;
+        return extensions.length > 0;
+      },
+      SHORT_TIMEOUT,
+      200
+    ).catch(() => {
+      // Timeout is acceptable - extensions may not be loaded
+    });
 
     if (extensions.length === 0) {
       console.log(
@@ -93,20 +174,18 @@ export async function getExtensionId(
  */
 async function waitForMetaMaskReady(page: Page, timeout = 30000): Promise<void> {
   await page.waitForLoadState("domcontentloaded", { timeout });
-  // Wait for MetaMask UI to render - try multiple selectors for different states
-  await page
-    .waitForSelector(
-      '[data-testid="unlock-page"], [data-testid="account-menu-icon"], .unlock-page',
-      {
-        timeout,
-        state: "visible",
-      }
-    )
-    .catch(() => {
-      // Swallow error - page may be in a different state (onboarding, etc.)
-    });
-  // Small buffer for animations to complete
-  await page.waitForTimeout(500);
+
+  // Wait for MetaMask UI to render - check for any known state indicator
+  const readySelectors = [
+    '[data-testid="unlock-page"]',
+    '[data-testid="account-menu-icon"]',
+    ".unlock-page",
+    '[data-testid="onboarding-welcome"]',
+  ];
+
+  await waitForAnySelector(page, readySelectors, timeout).catch(() => {
+    // Swallow error - page may be in an unexpected state
+  });
 }
 
 /**
@@ -120,63 +199,153 @@ export async function importWallet(
   seedPhrase: string,
   password: string
 ): Promise<void> {
-  // Click "Import an existing wallet"
-  await page
-    .click('[data-testid="onboarding-import-wallet"]')
-    .catch(() => page.click('button:has-text("Import an existing wallet")'));
+  console.log("[MetaMask] Starting wallet import...");
 
-  // Agree to terms
-  await page.click('[data-testid="onboarding-terms-checkbox"]').catch(() => {
-    // Checkbox may not exist in some versions
-  });
-  await page
-    .click('[data-testid="onboarding-import-button"]')
-    .catch(() => page.click('button:has-text("I agree")'));
+  // Wait for onboarding page - look for welcome screen or import button
+  await page.waitForLoadState("domcontentloaded");
+  await waitForAnySelector(
+    page,
+    ['[data-testid="onboarding-import-wallet"]', '[data-testid="onboarding-terms-checkbox"]'],
+    DEFAULT_TIMEOUT
+  );
 
-  // Wait for seed phrase input
-  await page.waitForSelector('[data-testid="import-srp__srp-word-0"], input[type="password"]', {
-    timeout: 10000,
-  });
+  // STEP 1: Accept terms first (checkbox must be checked before import button is enabled)
+  console.log("[MetaMask] Step 1: Accepting initial terms...");
 
-  // Enter seed phrase words
-  const words = seedPhrase.trim().split(/\s+/);
-  for (let i = 0; i < words.length; i++) {
-    const input = page.locator(`[data-testid="import-srp__srp-word-${i}"]`);
-    if ((await input.count()) > 0) {
-      await input.fill(words[i]!);
+  const termsCheckbox = page.locator(
+    '[data-testid="onboarding-terms-checkbox"], input[type="checkbox"]'
+  );
+  if ((await termsCheckbox.count()) > 0) {
+    const isChecked = await termsCheckbox
+      .first()
+      .isChecked()
+      .catch(() => false);
+    if (!isChecked) {
+      await termsCheckbox.first().click();
+      console.log("[MetaMask] Initial terms checkbox clicked");
     }
   }
 
-  // Click confirm seed phrase
-  await page
-    .click('[data-testid="import-srp-confirm"]')
-    .catch(() => page.click('button:has-text("Confirm Secret Recovery Phrase")'));
+  // STEP 2: Click "Import an existing wallet" (wait for it to be enabled)
+  console.log("[MetaMask] Step 2: Clicking import wallet button...");
+  const importBtn = page.locator('[data-testid="onboarding-import-wallet"]');
 
-  // Enter password twice
+  // Wait for button to be interactable (visible + enabled)
+  await waitForInteractable(importBtn, SHORT_TIMEOUT).catch(async () => {
+    // If still disabled, try clicking checkbox again
+    console.log("[MetaMask] Button still disabled, retrying checkbox...");
+    await page.click('input[type="checkbox"]').catch(() => {});
+    await waitForInteractable(importBtn, SHORT_TIMEOUT);
+  });
+
+  await importBtn.click();
+
+  // STEP 3: Handle intermediate screens (terms, metametrics)
+  console.log("[MetaMask] Step 3: Handling terms agreement screen...");
+
+  // Wait for either: terms screen, metametrics screen, or seed phrase input
+  const nextScreenIndex = await waitForAnySelector(
+    page,
+    [
+      '[data-testid="import-srp__srp-word-0"]', // Seed phrase input (skip ahead)
+      '[data-testid="metametrics-no-thanks"]', // Metametrics opt-out
+      '[data-testid="onboarding-import-button"]', // Terms agree button
+      'button:has-text("I agree")', // Alternative terms button
+    ],
+    DEFAULT_TIMEOUT
+  );
+
+  // Handle each possible screen
+  if (nextScreenIndex >= 2) {
+    // Terms screen - click agree
+    await page.click('[data-testid="onboarding-import-button"]').catch(() => {});
+    await page.click('button:has-text("I agree")').catch(() => {});
+
+    // Now wait for metametrics or seed phrase
+    await waitForAnySelector(
+      page,
+      ['[data-testid="import-srp__srp-word-0"]', '[data-testid="metametrics-no-thanks"]'],
+      DEFAULT_TIMEOUT
+    );
+  }
+
+  if (
+    nextScreenIndex === 1 ||
+    (await page.locator('[data-testid="metametrics-no-thanks"]').count()) > 0
+  ) {
+    // Metametrics screen - decline
+    await page.click('[data-testid="metametrics-no-thanks"]').catch(() => {});
+  }
+
+  // STEP 4: Wait for and fill seed phrase form
+  console.log("[MetaMask] Step 4: Entering seed phrase...");
+  await page.waitForSelector('[data-testid="import-srp__srp-word-0"]', {
+    timeout: DEFAULT_TIMEOUT,
+  });
+
+  const words = seedPhrase.trim().split(/\s+/);
+  console.log(`[MetaMask] Entering ${words.length} word seed phrase...`);
+
+  // Fill all seed phrase inputs (Playwright's fill() handles actionability)
+  for (let i = 0; i < words.length; i++) {
+    await page.fill(`[data-testid="import-srp__srp-word-${i}"]`, words[i]!);
+  }
+
+  // Click confirm and wait for password screen
+  console.log("[MetaMask] Confirming seed phrase...");
+  await page.click('[data-testid="import-srp-confirm"]');
+
+  // STEP 5: Create password
+  console.log("[MetaMask] Step 5: Creating password...");
+  await page.waitForSelector('[data-testid="create-password-new"]', { timeout: DEFAULT_TIMEOUT });
+
   await page.fill('[data-testid="create-password-new"]', password);
   await page.fill('[data-testid="create-password-confirm"]', password);
 
-  // Check terms checkbox
-  await page.click('[data-testid="create-password-terms"]').catch(() => {
-    // Checkbox may not exist
+  // Check terms checkbox if present
+  await page.click('[data-testid="create-password-terms"]').catch(() => {});
+
+  // Submit and wait for completion screen
+  await page.click('[data-testid="create-password-import"]');
+
+  // STEP 6: Complete onboarding
+  console.log("[MetaMask] Step 6: Completing onboarding...");
+
+  // Wait for completion screen indicators
+  await waitForAnySelector(
+    page,
+    [
+      '[data-testid="onboarding-complete-done"]',
+      '[data-testid="pin-extension-next"]',
+      '[data-testid="account-menu-icon"]', // Already on main screen
+    ],
+    15000
+  );
+
+  // Click through completion screens
+  await page.click('[data-testid="onboarding-complete-done"]').catch(() => {});
+
+  // Handle pin extension screens if present
+  const hasPinScreen = (await page.locator('[data-testid="pin-extension-next"]').count()) > 0;
+  if (hasPinScreen) {
+    await page.click('[data-testid="pin-extension-next"]').catch(() => {});
+    await page.click('[data-testid="pin-extension-done"]').catch(() => {});
+  }
+
+  // Dismiss any remaining popups
+  await page.click('button:has-text("Got it")').catch(() => {});
+  await page.click('[data-testid="popover-close"]').catch(() => {});
+
+  // Verify we're on the main screen
+  await waitForAnySelector(
+    page,
+    ['[data-testid="account-menu-icon"]', '[data-testid="eth-overview-send"]'],
+    SHORT_TIMEOUT
+  ).catch(() => {
+    // May already be ready
   });
 
-  // Submit
-  await page
-    .click('[data-testid="create-password-import"]')
-    .catch(() => page.click('button:has-text("Import my wallet")'));
-
-  // Complete onboarding
-  await page.waitForTimeout(2000);
-  await page
-    .click('[data-testid="onboarding-complete-done"]')
-    .catch(() => page.click('button:has-text("Got it")'));
-  await page.click('[data-testid="pin-extension-next"]').catch(() => {
-    // Pin extension step may not exist
-  });
-  await page
-    .click('[data-testid="pin-extension-done"]')
-    .catch(() => page.click('button:has-text("Done")'));
+  console.log("[MetaMask] Wallet import complete!");
 }
 
 /**
@@ -230,18 +399,39 @@ export async function createMetaMaskController(
       const notificationPage = findNotificationPage(context);
       const targetPage = notificationPage || metamaskPage;
 
-      // Handle connection approval
+      // Wait for connection dialog
+      await waitForAnySelector(
+        targetPage,
+        [
+          '[data-testid="page-container-footer-next"]',
+          'button:has-text("Next")',
+          'button:has-text("Connect")',
+        ],
+        SHORT_TIMEOUT
+      ).catch(() => {});
+
+      // Handle connection approval (may be multi-step)
       await targetPage
         .click('[data-testid="page-container-footer-next"], button:has-text("Next")')
-        .catch(() => {
-          // Button may not exist
-        });
+        .catch(() => {});
+
+      // Wait for Connect button if this was a two-step flow
+      await waitForAnySelector(
+        targetPage,
+        ['button:has-text("Connect")', '[data-testid="page-container-footer-next"]'],
+        SHORT_TIMEOUT
+      ).catch(() => {});
+
       await targetPage
         .click('[data-testid="page-container-footer-next"], button:has-text("Connect")')
-        .catch(() => {
-          // Button may not exist
-        });
-      await targetPage.waitForTimeout(500);
+        .catch(() => {});
+
+      // Wait for dialog to close
+      await waitForDetached(
+        targetPage,
+        '[data-testid="page-container-footer-next"]',
+        SHORT_TIMEOUT
+      );
     },
 
     async confirmSignature(): Promise<void> {
@@ -296,55 +486,171 @@ export async function createMetaMaskController(
     },
 
     async addNetwork(network: NetworkConfig): Promise<void> {
-      // Navigate directly to add network page (most reliable)
+      console.log(`[MetaMask] Adding network: ${network.name}`);
+
+      // Navigate directly to add network page
       await metamaskPage.goto(
         `chrome-extension://${extensionId}/home.html#settings/networks/add-network`
       );
-      await metamaskPage.waitForTimeout(1500);
+      await metamaskPage.waitForLoadState("domcontentloaded");
+
+      // Wait for either the manual form or the "Add manually" button
+      await waitForAnySelector(
+        metamaskPage,
+        [".networks-tab__add-network-form", 'button:has-text("Add a network manually")'],
+        DEFAULT_TIMEOUT
+      );
 
       // Click "Add a network manually" if visible
-      await metamaskPage.click('button:has-text("Add a network manually")').catch(() => {
-        // Already on manual add form
-      });
-      await metamaskPage.waitForTimeout(500);
-
-      // Fill network details using label-based selectors
-      await metamaskPage.getByLabel("Network name").fill(network.name);
-      await metamaskPage.getByLabel("New RPC URL").fill(network.rpcUrl);
-      await metamaskPage.getByLabel("Chain ID").fill(String(network.chainId));
-
-      // Wait for chain ID validation, then click suggested symbol link
-      await metamaskPage.waitForTimeout(1000);
-      await metamaskPage.click(`text=${network.symbol}`).catch(() => {
-        // If no suggested symbol, fill manually using nth input (4th = currency symbol)
-        metamaskPage.locator("input").nth(3).fill(network.symbol);
-      });
-
-      if (network.blockExplorerUrl) {
-        // Block explorer is the 5th input
-        await metamaskPage.locator("input").nth(4).fill(network.blockExplorerUrl);
+      const addManuallyBtn = metamaskPage.locator('button:has-text("Add a network manually")');
+      if ((await addManuallyBtn.count()) > 0) {
+        await addManuallyBtn.click();
       }
 
-      // Save
-      await metamaskPage.waitForTimeout(500);
-      await metamaskPage.click('button:has-text("Save")');
-      await metamaskPage.waitForTimeout(2000);
+      // Wait for the form fields to be ready
+      const newNetworkFormContainer = ".networks-tab__add-network-form";
+      await metamaskPage.waitForSelector(
+        `${newNetworkFormContainer} .form-field:nth-child(1) input`,
+        {
+          timeout: DEFAULT_TIMEOUT,
+        }
+      );
 
-      // Handle "Switch to network" popup - dismiss it
-      await metamaskPage.click('button:has-text("Dismiss")').catch(() => {
-        // No switch popup or already dismissed
+      // Synpress-style selectors (proven for MetaMask 11.x)
+      const networkNameInput = metamaskPage
+        .locator(`${newNetworkFormContainer} .form-field:nth-child(1) input`)
+        .first();
+      const rpcUrlInput = metamaskPage
+        .locator(`${newNetworkFormContainer} .form-field:nth-child(2) input`)
+        .first();
+      const chainIdInput = metamaskPage
+        .locator(`${newNetworkFormContainer} .form-field:nth-child(3) input`)
+        .first();
+      const symbolInput = metamaskPage.locator('[data-testid="network-form-ticker"] input').first();
+      const explorerInput = metamaskPage
+        .locator(`${newNetworkFormContainer} .form-field:last-child input`)
+        .first();
+      const saveButton = metamaskPage
+        .locator(`${newNetworkFormContainer}-footer button.btn-primary, button:has-text("Save")`)
+        .first();
+
+      // Fill form fields (Playwright's fill() handles actionability automatically)
+      await networkNameInput.fill(network.name);
+      await rpcUrlInput.fill(network.rpcUrl);
+      await chainIdInput.fill(String(network.chainId));
+
+      // Smart wait for chain ID validation:
+      // MetaMask makes an RPC call to validate - poll until form validation completes
+      // Success indicators: save button becomes enabled OR symbol field gets auto-populated
+      await pollUntil(
+        metamaskPage,
+        async () => {
+          // Check if save button is enabled (validation complete)
+          const isEnabled = await saveButton.isEnabled().catch(() => false);
+          if (isEnabled) return true;
+
+          // Check for loading indicators (still validating)
+          const hasSpinner = (await metamaskPage.locator(".spinner, .loading").count()) > 0;
+          if (hasSpinner) return false;
+
+          // Check for validation errors on chain ID field (validation complete, but failed)
+          const hasChainIdError =
+            (await metamaskPage.locator(".form-field:nth-child(3) .form-field__error").count()) > 0;
+          return hasChainIdError; // Validation complete (even if error)
+        },
+        10000,
+        200
+      ).catch(() => {
+        // Timeout is acceptable - proceed anyway
       });
-      await metamaskPage.waitForTimeout(500);
+
+      // Fill remaining fields
+      await symbolInput.fill(network.symbol);
+      if (network.blockExplorerUrl) {
+        await explorerInput.fill(network.blockExplorerUrl);
+      }
+
+      // Wait for save button to be enabled (form fully valid)
+      await pollUntil(
+        metamaskPage,
+        async () => {
+          return await saveButton.isEnabled().catch(() => false);
+        },
+        SHORT_TIMEOUT,
+        100
+      ).catch(() => {
+        // Proceed anyway - will try force click if needed
+      });
+
+      // Click Save button
+      try {
+        await saveButton.click({ timeout: SHORT_TIMEOUT });
+      } catch {
+        // Fallback: force click or keyboard
+        await saveButton.click({ force: true }).catch(() => {
+          metamaskPage.keyboard.press("Enter");
+        });
+      }
+
+      // Wait for save confirmation - either popup appears OR URL changes (back to network list)
+      await waitForAnySelector(
+        metamaskPage,
+        [
+          'button:has-text("Dismiss")',
+          'button:has-text("Got it")',
+          '[data-testid="popover-close"]',
+          ".networks-tab__networks-list", // Back on networks list
+        ],
+        DEFAULT_TIMEOUT
+      ).catch(() => {
+        // May have already navigated
+      });
+
+      // Dismiss any popups
+      const dismissBtn = metamaskPage.locator(
+        'button:has-text("Dismiss"), button:has-text("Got it")'
+      );
+      if ((await dismissBtn.count()) > 0) {
+        await dismissBtn.first().click();
+      }
+      await metamaskPage.click('[data-testid="popover-close"]').catch(() => {});
+
+      console.log(`[MetaMask] Network "${network.name}" added successfully`);
     },
 
     async switchNetwork(networkName: string): Promise<void> {
       await metamaskPage.click('[data-testid="network-display"]');
+
+      // Wait for network list to appear
+      await waitForAnySelector(
+        metamaskPage,
+        [
+          `button:has-text("${networkName}")`,
+          `[data-testid="network-list-item"]:has-text("${networkName}")`,
+        ],
+        SHORT_TIMEOUT
+      );
+
       await metamaskPage
         .click(`button:has-text("${networkName}")`)
         .catch(() =>
           metamaskPage.click(`[data-testid="network-list-item"]:has-text("${networkName}")`)
         );
-      await metamaskPage.waitForTimeout(500);
+
+      // Wait for network switch confirmation (network display updates)
+      await pollUntil(
+        metamaskPage,
+        async () => {
+          const displayText = await metamaskPage
+            .locator('[data-testid="network-display"]')
+            .textContent();
+          return displayText?.includes(networkName) ?? false;
+        },
+        SHORT_TIMEOUT,
+        100
+      ).catch(() => {
+        // May already be on correct network
+      });
     },
   };
 }

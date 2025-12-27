@@ -38,8 +38,8 @@ temp/
 
 # Browser profiles
 profiles/
+skills/dev-browser/profiles-*/
 
 # WXT generated files
 .wxt/
 .output/
-skills/dev-browser/profiles-metamask/

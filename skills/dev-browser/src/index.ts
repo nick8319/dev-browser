@@ -164,21 +164,25 @@ export async function serve(options: ServeOptions = {}): Promise<DevBrowserServe
           await importWallet(setupPage, options.seedPhrase, options.walletPassword);
           writeFileSync(walletInitializedFile, new Date().toISOString());
           console.log("Wallet imported successfully");
+          await setupPage.close();
 
-          // Add network if configured
+          // Always create controller after wallet import (needed for API endpoints)
+          metamaskController = await createMetaMaskController(
+            context,
+            extensionId,
+            options.walletPassword
+          );
+          console.log("MetaMask controller initialized");
+
+          // Add network if configured at startup
           if (options.networkConfig) {
-            metamaskController = await createMetaMaskController(
-              context,
-              extensionId,
-              options.walletPassword
-            );
             await metamaskController.addNetwork(options.networkConfig);
             console.log(`Added network: ${options.networkConfig.name}`);
           }
         } catch (err) {
           console.error("Failed to import wallet:", err);
+          await setupPage.close();
         }
-        await setupPage.close();
       } else {
         console.log("No wallet credentials provided, skipping wallet setup");
         await setupPage.close();
