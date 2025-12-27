@@ -37,6 +37,14 @@ cd skills/dev-browser && npm run start-metamask -- --project-dir /path/to/projec
 
 Requires `METAMASK_EXTENSION_PATH` and `WALLET_PASSWORD` in project's `.env`. Script auto-loads them.
 
+**Add custom network:**
+
+```bash
+cd skills/dev-browser && npx tsx scripts/add-network.ts \
+  --name "Ink Sepolia" --rpc "https://rpc-gel-sepolia.inkonchain.com" \
+  --chain-id 763373 --symbol ETH --explorer "https://explorer-sepolia.inkonchain.com/"
+```
+
 ## Writing Scripts
 
 Run from `skills/dev-browser/` directory (required for `@/` imports):

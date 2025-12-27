@@ -296,42 +296,45 @@ export async function createMetaMaskController(
     },
 
     async addNetwork(network: NetworkConfig): Promise<void> {
-      // Open network settings
-      await metamaskPage.click('[data-testid="network-display"]');
-      await metamaskPage
-        .click('button:has-text("Add network")')
-        .catch(() => metamaskPage.click('[data-testid="add-network-button"]'));
+      // Navigate directly to add network page (most reliable)
+      await metamaskPage.goto(
+        `chrome-extension://${extensionId}/home.html#settings/networks/add-network`
+      );
+      await metamaskPage.waitForTimeout(1500);
+
+      // Click "Add a network manually" if visible
       await metamaskPage.click('button:has-text("Add a network manually")').catch(() => {
-        // Manual add option may not exist
+        // Already on manual add form
+      });
+      await metamaskPage.waitForTimeout(500);
+
+      // Fill network details using label-based selectors
+      await metamaskPage.getByLabel("Network name").fill(network.name);
+      await metamaskPage.getByLabel("New RPC URL").fill(network.rpcUrl);
+      await metamaskPage.getByLabel("Chain ID").fill(String(network.chainId));
+
+      // Wait for chain ID validation, then click suggested symbol link
+      await metamaskPage.waitForTimeout(1000);
+      await metamaskPage.click(`text=${network.symbol}`).catch(() => {
+        // If no suggested symbol, fill manually using nth input (4th = currency symbol)
+        metamaskPage.locator("input").nth(3).fill(network.symbol);
       });
 
-      // Fill network details
-      await metamaskPage.fill(
-        '[data-testid="network-form-network-name"], input[name="networkName"]',
-        network.name
-      );
-      await metamaskPage.fill(
-        '[data-testid="network-form-rpc-url"], input[name="rpcUrl"]',
-        network.rpcUrl
-      );
-      await metamaskPage.fill(
-        '[data-testid="network-form-chain-id"], input[name="chainId"]',
-        String(network.chainId)
-      );
-      await metamaskPage.fill(
-        '[data-testid="network-form-ticker-input"], input[name="ticker"]',
-        network.symbol
-      );
       if (network.blockExplorerUrl) {
-        await metamaskPage.fill(
-          '[data-testid="network-form-block-explorer-url"], input[name="blockExplorerUrl"]',
-          network.blockExplorerUrl
-        );
+        // Block explorer is the 5th input
+        await metamaskPage.locator("input").nth(4).fill(network.blockExplorerUrl);
       }
 
       // Save
-      await metamaskPage.click('[data-testid="add-network-form-save"], button:has-text("Save")');
-      await metamaskPage.waitForTimeout(1000);
+      await metamaskPage.waitForTimeout(500);
+      await metamaskPage.click('button:has-text("Save")');
+      await metamaskPage.waitForTimeout(2000);
+
+      // Handle "Switch to network" popup - dismiss it
+      await metamaskPage.click('button:has-text("Dismiss")').catch(() => {
+        // No switch popup or already dismissed
+      });
+      await metamaskPage.waitForTimeout(500);
     },
 
     async switchNetwork(networkName: string): Promise<void> {
